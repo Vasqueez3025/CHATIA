@@ -1,163 +1,284 @@
 import streamlit as st
 from openai import OpenAI
 import base64
+from PyPDF2 import PdfReader
+from datetime import datetime
+import requests
 
-# API KEY
+# ================== CONFIG ==================
+st.set_page_config(page_title="JV IA PRO", page_icon="🤖", layout="wide")
+
+# 🔐 API KEY
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# CONFIG
-st.set_page_config(page_title="ICO IA", page_icon="🤖", layout="wide")
+# ================== GEO ==================
+@st.cache_data(ttl=300)
+def obtener_geo():
+    try:
+        r = requests.get("https://ipapi.co/json/", timeout=5)
+        d = r.json()
+        return {
+            "ciudad": d.get("city", ""),
+            "pais": d.get("country_name", ""),
+            "lat": d.get("latitude", None),
+            "lon": d.get("longitude", None)
+        }
+    except:
+        return {"ciudad": "", "pais": "", "lat": None, "lon": None}
+
+geo = obtener_geo()
+ubicacion = f"{geo['ciudad']}, {geo['pais']}"
+hora_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# ================== CLIMA REAL ==================
+@st.cache_data(ttl=600)
+def obtener_clima(lat, lon):
+    try:
+        if lat is None or lon is None:
+            return None
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        w = data.get("current_weather", {})
+        return {
+            "temp": w.get("temperature"),
+            "wind": w.get("windspeed")
+        }
+    except:
+        return None
+
+clima = obtener_clima(geo["lat"], geo["lon"])
 
 # ================== ESTADO ==================
 if "chats" not in st.session_state:
     st.session_state.chats = {
-        "Nuevo chat 1": [{"role": "system", "content": "Eres un asistente útil"}]
+        "Nuevo chat": [{"role": "system", "content": "Eres un asistente útil"}]
     }
 
 if "current_chat" not in st.session_state:
-    st.session_state.current_chat = "Nuevo chat 1"
+    st.session_state.current_chat = "Nuevo chat"
 
-if "chat_count" not in st.session_state:
-    st.session_state.chat_count = 1
-
-if "show_uploader" not in st.session_state:
-    st.session_state.show_uploader = False
+if "style" not in st.session_state:
+    st.session_state.style = "Realista"
 
 # ================== CSS ==================
 st.markdown("""
 <style>
-body {
-    background-color: #0E1117;
-    color: white;
-}
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 120px;
-    max-width: 900px;
-}
-[data-testid="stChatInput"] > div {
-    background-color: #2A2B32;
-    border-radius: 60px;
-    border: 1px solid #3a3b42;
-}
-.logo-container {
+.stApp {background-color: #0f172a; color: white;}
+header {visibility: hidden;}
+
+#header-fixed {
+    position: fixed;
+    top: 0;
+    left: 300px;
+    right: 0;
+    height: 60px;
+    background: rgba(2,6,23,0.9);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid #1e293b;
     display: flex;
-    justify-content: center;
-    margin-bottom: 20px;
+    align-items: center;
+    padding-left: 20px;
+    z-index: 999;
+}
+
+.chat-bubble-user {
+    background: #1e293b;
+    padding: 12px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+}
+
+.chat-bubble-assistant {
+    background: #020617;
+    padding: 12px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+    border: 1px solid #1e293b;
+}
+
+.stChatInput {
+    position: fixed;
+    bottom: 20px;
+    left: 300px;
+    right: 40px;
+}
+
+section[data-testid="stSidebar"] {
+    background-color: #020617;
+    border-right: 1px solid #1e293b;
 }
 </style>
 """, unsafe_allow_html=True)
 
+# ================== HEADER ==================
+clima_txt = ""
+if clima:
+    clima_txt = f"🌡️ {clima['temp']}°C"
+
+st.markdown(f"""
+<div id="header-fixed">
+    <h3>🤖 JV IA PRO</h3>
+    <div style="margin-left:auto; margin-right:20px; font-size:12px; opacity:0.7;">
+        📍 {ubicacion} | 🕒 {hora_actual} {clima_txt}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ================== FUNCIONES ==================
+def decidir_tipo_respuesta(user_input):
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Responde SOLO con 'imagen' o 'texto'."},
+            {"role": "user", "content": user_input}
+        ],
+        max_tokens=5
+    )
+    return r.choices[0].message.content.strip().lower()
+
+def aplicar_estilo(prompt):
+    estilos = {
+        "Realista": "ultra realista, fotografía profesional, 4k",
+        "Anime": "anime japonés",
+        "3D": "render 3D cinematográfico",
+        "Pixel Art": "pixel art retro",
+        "Dibujo": "ilustración artística"
+    }
+    return f"{estilos.get(st.session_state.style, '')}: {prompt}"
+
+def leer_pdf(file):
+    reader = PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    return text[:4000]
+
 # ================== SIDEBAR ==================
 with st.sidebar:
-    st.title("💬 Chats")
+    st.image("logo.png", width=140)
 
     if st.button("➕ Nuevo chat"):
-        st.session_state.chat_count += 1
-        new_name = f"Nuevo chat {st.session_state.chat_count}"
-        st.session_state.chats[new_name] = [
-            {"role": "system", "content": "Eres un asistente útil"}
-        ]
-        st.session_state.current_chat = new_name
+        name = f"Chat {len(st.session_state.chats)+1}"
+        st.session_state.chats[name] = [{"role": "system", "content": "Eres un asistente útil"}]
+        st.session_state.current_chat = name
         st.rerun()
 
     st.markdown("---")
 
-    for chat_name in st.session_state.chats.keys():
-        if st.button(chat_name):
-            st.session_state.current_chat = chat_name
+    for c in st.session_state.chats:
+        if st.button(c):
+            st.session_state.current_chat = c
             st.rerun()
 
-# ================== LOGO ==================
-st.markdown('<div class="logo-container">', unsafe_allow_html=True)
-st.image("logo.png", width=800)
-st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("---")
 
-# ================== CHAT ACTUAL ==================
+    st.selectbox("🎨 Estilo",
+        ["Realista", "Anime", "3D", "Pixel Art", "Dibujo"],
+        key="style"
+    )
+
+    st.markdown("---")
+
+    file = st.file_uploader("📄 Subir PDF", type=["pdf"])
+    if file:
+        contenido_pdf = leer_pdf(file)
+        st.session_state.chats[st.session_state.current_chat].append({
+            "role": "system",
+            "content": f"Contenido del PDF:\n{contenido_pdf}"
+        })
+        st.success("PDF cargado")
+
+    if st.button("🧹 Limpiar chat"):
+        st.session_state.chats[st.session_state.current_chat] = [
+            {"role": "system", "content": "Eres un asistente útil"}
+        ]
+        st.rerun()
+
+# ================== CHAT ==================
 messages = st.session_state.chats[st.session_state.current_chat]
 
-# ================== MOSTRAR MENSAJES ==================
 for msg in messages:
     if msg["role"] != "system":
-        with st.chat_message(msg["role"]):
-            if isinstance(msg["content"], list):
-                for item in msg["content"]:
-                    if item["type"] == "text":
-                        st.markdown(item["text"])
-                    elif item["type"] == "image_url":
-                        st.image(item["image_url"]["url"])
+        if msg["role"] == "user":
+            st.markdown(f'<div class="chat-bubble-user">{msg["content"]}</div>', unsafe_allow_html=True)
+        else:
+            if "data:image" in str(msg["content"]):
+                st.image(msg["content"])
             else:
-                st.markdown(msg["content"])
+                st.markdown(f'<div class="chat-bubble-assistant">{msg["content"]}</div>', unsafe_allow_html=True)
 
 # ================== INPUT ==================
-col1, col2 = st.columns([1, 12])
-
-with col1:
-    if st.button("+"):
-        st.session_state.show_uploader = not st.session_state.show_uploader
-
-uploaded_file = None
-if st.session_state.show_uploader:
-    uploaded_file = st.file_uploader("Sube imagen", type=["png", "jpg", "jpeg"])
-
-with col2:
-    user_input = st.chat_input("Ask anything...")
+user_input = st.chat_input("Escribe como ChatGPT...")
 
 # ================== PROCESO ==================
-if user_input or uploaded_file:
+if user_input:
 
-    content = []
+    # Mostrar instantáneo
+    st.markdown(f'<div class="chat-bubble-user">{user_input}</div>', unsafe_allow_html=True)
 
-    if user_input:
-        content.append({"type": "text", "text": user_input})
+    messages.append({"role": "user", "content": user_input})
 
-    if uploaded_file:
-        image_bytes = uploaded_file.read()
-        base64_image = base64.b64encode(image_bytes).decode()
+    contexto = f"""
+Ubicación: {ubicacion}
+Hora: {hora_actual}
+Clima: {clima}
+"""
 
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{base64_image}"
-            }
-        })
+    with st.spinner("Pensando..."):
 
-    messages.append({
-        "role": "user",
-        "content": content if content else user_input
-    })
+        tipo = decidir_tipo_respuesta(user_input)
 
-    # 🔥 RENOMBRAR CHAT CON PRIMER MENSAJE
-    if len(messages) == 2:
-        new_title = user_input[:30] if user_input else "Imagen"
+        # ================== IMAGEN ==================
+        if tipo == "imagen":
+            prompt_final = aplicar_estilo(user_input)
 
-        original_title = new_title
-        i = 1
-        while new_title in st.session_state.chats:
-            new_title = f"{original_title} ({i})"
-            i += 1
-
-        st.session_state.chats[new_title] = st.session_state.chats.pop(st.session_state.current_chat)
-        st.session_state.current_chat = new_title
-
-    with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages
+            img = client.images.generate(
+                model="gpt-image-1",
+                prompt=prompt_final,
+                size="1024x1024"
             )
 
-            reply = response.choices[0].message.content
-            st.markdown(reply)
+            image_base64 = img.data[0].b64_json
+            image_bytes = base64.b64decode(image_base64)
 
-    messages.append({
-        "role": "assistant",
-        "content": reply
-    })
+            st.image(image_bytes)
 
-# ================== LIMPIAR ==================
-if st.button("🧹 Limpiar conversación"):
-    st.session_state.chats[st.session_state.current_chat] = [
-        {"role": "system", "content": "Eres un asistente útil"}
-    ]
-    st.rerun()
+            messages.append({
+                "role": "assistant",
+                "content": f"data:image/jpeg;base64,{image_base64}"
+            })
+
+        # ================== TEXTO STREAM ==================
+        else:
+            container = st.empty()
+            full = ""
+
+            stream = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": contexto},
+                    *messages
+                ],
+                stream=True
+            )
+
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full += token
+
+                    container.markdown(
+                        f'<div class="chat-bubble-assistant">{full}▌</div>',
+                        unsafe_allow_html=True
+                    )
+
+            container.markdown(
+                f'<div class="chat-bubble-assistant">{full}</div>',
+                unsafe_allow_html=True
+            )
+
+            messages.append({
+                "role": "assistant",
+                "content": full
+            })
